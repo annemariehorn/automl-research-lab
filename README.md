@@ -1,360 +1,170 @@
+# NYC Taxi Data Pipeline and ML Workflow
 
-## NYC Taxi Mini-Assignment — Airflow + LangGraph
+## Project Overview
 
-My completed NYC Taxi data pipeline and machine learning assignment is documented here:
+This project uses Apache Airflow and LangGraph to build an automated data processing and machine learning workflow using New York City yellow taxi trip data.
 
-**[View NYC Taxi Assignment, Results, and Screenshots](docs/nyc_taxi/README.md)**
+The objective is to predict whether a taxi fare is above the median fare using trip characteristics such as distance, passenger count, pickup time, and pickup borough.
 
----
+The project consists of two parts:
 
-# AutoML Research Lab: Student Setup
+1. An Airflow DAG that cleans, merges, and stores taxi data in PostgreSQL.
+2. A custom LangGraph workflow that trains and evaluates classification models using conditional looping logic.
 
-Classroom demo in two parts. Start in **`lab/`**; peek at **`solution/`** when revealed; ignore **`advanced/`** until later.
+## Original repository setup
 
+The complete original README, including development setup instructions and commands, is preserved in [Original setup instructions](docs/original_setup.md). Run all commands from the repository root.
+
+## Part 1: Apache Airflow Pipeline
+
+### Datasets
+
+Two datasets from the NYC Taxi & Limousine Commission (TLC) are used:
+
+- January 2025 Yellow Taxi Trip Records
+- NYC Taxi Zone Lookup Table
+
+The original trip dataset contains approximately 3.48 million records. A reproducible sample of 20,000 trips was selected using `random_state=42`.
+
+### DAG Structure
+
+The custom DAG is located at:
+
+`lab/airflow/dags/nyc_taxi_pipeline.py`
+
+It contains five tasks:
+
+1. **clean_taxi_trips:** Removes trips with nonpositive distances or fares, handles missing passenger counts, and creates pickup hour and weekday features.
+2. **clean_taxi_zones:** Validates location IDs and cleans borough and zone information.
+3. **merge_taxi_data:** Joins taxi trips with zone information using pickup location IDs.
+4. **load_to_postgres:** Loads the merged dataset into the PostgreSQL `taxi_trips_cleaned` table.
+5. **read_from_postgres:** Reads the cleaned records from PostgreSQL, verifies the row count, and saves a machine-learning-ready Parquet file.
+
+The two cleaning tasks run independently before the merge, demonstrating parallel task execution.
+
+### Scheduling
+
+The DAG uses the following Airflow settings:
+
+- Schedule: `@daily`
+- Start date: November 1, 2026
+- Catchup: `False`
+- Maximum active runs: 1
+
+Each scheduled execution reprocesses the same January 2025 sample. It does not automatically download new daily taxi records.
+
+### Data Pipeline Results
+
+- Initial sample: 20,000 trips
+- Cleaned dataset: 18,689 trips
+- Records removed: 1,311
+- Average fare after cleaning: $17.92
+
+The cleaned data is stored in PostgreSQL and exported to:
+
+`artifacts/nyc_taxi/taxi_ml_ready.parquet`
+
+Analysis of this database read-back export confirms 18,689 records and a mean fare of $17.92. Cleaning removed 6.56% of the sampled trips.
+
+### Successful Airflow DAG Execution
+
+The Airflow Graph view below shows all five tasks successful, including the parallel cleaning branches, merge, PostgreSQL load, and database read-back. It documents both successful execution and the DAG graph.
+
+![Successful Airflow pipeline](screenshots/nyc_taxi_airflow_success.png)
+
+## Part 2: Agent-Based LangGraph ML Workflow
+
+The classroom research loop is adapted in `lab/langgraph/nyc_taxi_graph.py` with explicit deterministic agents. It runs without an LLM API, API key, or external memory service.
+
+### Agents and executable graph
+
+```mermaid
+flowchart LR
+  load_data --> prepare_data --> hypothesis_generator --> train_model --> evaluate_model
+  evaluate_model --> memory_writer
+  memory_writer -->|retry| context_builder --> hypothesis_generator
+  memory_writer -->|stop| final_test --> END
 ```
-lab/          student stubs (Airflow DAGs + LangGraph)
-solution/     filled reference (Airflow DAGs + LangGraph)
-advanced/     full multi-agent stack (gateway services, orchestrator, …)
-frontend/     UI — opens on /guide
-```
 
-1. **Airflow** — merge CSVs, train a baseline, publish a dataset (Docker only)
-2. **LangGraph solution loop** — run the mini research loop in the UI (no Airflow required)
+- **Data Scientist — load_data / prepare_data:** Validate the cleaned Airflow output and split it 60/20/20 with seed 42: 11,213 training, 3,738 validation, and 3,738 test records. The target is `high_fare`: fare above the training-set median ($12.80). Features are trip distance, passenger count, pickup hour, pickup weekday, and borough; fare and target are excluded from inputs.
+- **Hypothesis Generator:** Establish a Logistic Regression baseline, then consume recorded results and judge feedback. A baseline validation F1 of at least 0.88 leads to Random Forest; a lower score leads to a shallow Decision Tree. Subsequent experiments test remaining untried candidates, avoiding repeats.
+- **ML Engineer — train_model:** Train the proposed candidate with preprocessing fitted on training data only; produce its configuration, rationale, validation accuracy, and F1.
+- **Judge — evaluate_model:** Compare validation results, select the best model using full-precision F1, and provide feedback. Stop when the target is achieved, the experiment budget is reached, or all candidates have been tried.
+- **Memory Writer:** Record each experiment's configuration, validation metrics, and judge feedback once in LangGraph state, including the terminal experiment before final testing.
+- **Context Builder:** Summarize recorded experiments, the best model, and the latest judge feedback for the next hypothesis.
+- **Final Holdout Evaluation — final_test:** Refit the selected model on training plus validation data and evaluate once on the held-out test split. Holdout metrics never influence experimentation or selection.
 
-You can run the sections independently, or run Airflow first so `/solution-loop` can use `merged_latest.csv`.
+The graph has eight nodes because the Data Scientist role uses two nodes. Every judge decision passes through Memory Writer before the conditional retry or completion path.
 
----
+### Verified results — updated workflow, November 12, 2026
 
-## Prerequisites
+Executed the existing CLI in the running gateway container against the Part 1 export: **18,689 rows**, target F1 **0.99**, budget **3**.
 
-| Tool | macOS | Windows |
-| --- | --- | --- |
-| Docker Desktop | Install from [docker.com](https://www.docker.com/products/docker-desktop/); leave it running | Same; use the WSL2 backend (recommended) |
-| Python 3.12+ | Homebrew / python.org | python.org installer; check **Add python.exe to PATH** |
-| Node.js 20+ | Homebrew / nodejs.org | nodejs.org LTS installer |
-| Make | Xcode CLT (`xcode-select --install`) or Homebrew | [Git for Windows](https://git-scm.com/download/win) (Git Bash includes `make`) or `choco install make` |
-| Git | Xcode CLT / Homebrew | [Git for Windows](https://git-scm.com/download/win) |
-| Terminal | Terminal.app / iTerm | **Git Bash** for `make start-windows` / `make down-windows` |
+| Experiment | Model | Validation accuracy | Validation F1 |
+| --- | --- | --- | --- |
+| 1 | Logistic Regression | 0.896469 | 0.886410 |
+| 2 | Random Forest | 0.901284 | 0.892200 |
+| 3 | Decision Tree | 0.902087 | 0.892163 |
 
-Do not install Airflow on the host. It runs only in Docker.
+**Selected: Random Forest.** Validation F1: **0.8922**; holdout accuracy: **0.9016** (90.16%); holdout F1: **0.8951**. The workflow stopped at the **three-experiment budget**; the 0.99 target was not achieved.
 
----
+Nonlinear models improved over the linear baseline. Random Forest narrowly beat Decision Tree on validation F1; both round to 0.8922 at four decimals, so selection uses full precision. Results may vary across scikit-learn versions.
 
-## One-time: clone and env
+### Run both workflows
+
+The repository provides Docker Compose and service/Airflow Dockerfiles in `infra/`. Follow the [original setup guide](docs/original_setup.md#prerequisites) for prerequisites and environment setup. From the repository root:
 
 ```bash
-git clone https://github.com/Kedar-V/automl-research-lab.git
-cd automl-research-lab
-```
-
-```bash
-cp .env.example .env          # macOS / Git Bash
-# Copy-Item .env.example .env # Windows PowerShell
-```
-
-`make start-mac` / `make start-windows` / `make airflow` will create `.env` from `.env.example` if it is missing.
-
-Edit `.env` as needed:
-
-| Variable | Used by | Required? |
-| --- | --- | --- |
-| `OPENROUTER_API_KEY` | Lab/solution loop LLM agents | Recommended (without it, nodes use fallbacks) |
-| `OPENROUTER_MODEL` | Lab/solution loop | Optional (default: `nvidia/nemotron-3.5-lightning:free`) |
-| `AIRFLOW_ADMIN_USER` / `AIRFLOW_ADMIN_PASSWORD` | Airflow UI | Optional (default: `admin` / `admin`) |
-| `CURSOR_API_KEY` | Lab/solution loop when Model = Cursor SDK; also full multi-agent stack | Optional |
-| `WANDB_*` | Full multi-agent stack only | Optional |
-
-Keep secrets in `.env`. Never commit real keys.
-
----
-
-## Quick start — web app (one command)
-
-Docker Desktop must be running. From the **repo root**, pick your OS:
-
-| | macOS | Windows |
-| --- | --- | --- |
-| **Start** (Docker + UI) | `make start-mac` | `make start-windows` *(Git Bash)* |
-| **Stop** (Vite + Docker) | `make down-mac` | `make down-windows` *(Git Bash)* |
-
-```bash
-# macOS
-make start-mac
-make down-mac
-
-# Windows (Git Bash)
-make start-windows
-make down-windows
-```
-
-`make start` / `make down` alone print this reminder and exit — always use the `-mac` or `-windows` target.
-
-That will:
-
-1. Ensure `.env` exists
-2. Build/start the Docker stack (gateway + services)
-3. Wait until `http://127.0.0.1:8000/healthz` is up
-4. `npm install` + start Vite
-
-Then open **[http://127.0.0.1:5173](http://127.0.0.1:5173)**
-
-Useful routes once the UI is up:
-
-| Route | What |
-| --- | --- |
-| [/guide](http://127.0.0.1:5173/guide) | Student guide (Airflow + LangGraph copyable steps) — default landing |
-| [/lab-loop](http://127.0.0.1:5173/lab-loop) | Lab loop (student skeleton) |
-| [/solution-loop](http://127.0.0.1:5173/solution-loop) | Solution loop (filled reference) |
-| [/advanced](http://127.0.0.1:5173/advanced) | Full multi-agent Control Center |
-
-`down-mac` frees `:5173` with `lsof`. `down-windows` frees `:5173` with PowerShell, then both run `docker compose … down`.
-
----
-
-## Section 1: Set up Airflow
-
-Goal: start Airflow in Docker, confirm the UI + DAGs, run prep, publish a subset CSV for later use.
-
-### Steps (macOS / Make)
-
-1. Make sure **Docker Desktop** is running.
-2. From the **repo root**, ensure `.env` exists (`cp .env.example .env` if needed).
-3. Start the Airflow profile:
-
-```bash
+# Part 1 (if the cleaned export is not already available)
 make airflow
+# Open http://localhost:8088 and trigger nyc_taxi_pipeline.
+
+# Part 2, using the existing container's installed dependencies
+# Start the existing stack first if necessary: make up
+docker compose -f infra/docker-compose.yml --env-file .env exec -w /packages gateway \
+  python -m lab.langgraph.nyc_taxi_run
 ```
 
-Equivalent:
+With pandas, pyarrow, scikit-learn, and langgraph installed in an active local Python environment, the original CLI also works:
 
 ```bash
-docker compose -f infra/docker-compose.yml --env-file .env --profile airflow up --build -d
+python -m lab.langgraph.nyc_taxi_run
 ```
 
-4. **Wait 1–2 minutes** (longer on first build). Confirm containers:
+### Live web interface
 
-```bash
-docker compose -f infra/docker-compose.yml --env-file .env --profile airflow ps
-```
+Start the existing development setup with `make start-mac` (or `make start-windows`). If the stack is already running, use `make frontend`. Open `/lab-loop` on the Vite URL printed in the terminal (normally port 5173; this workspace also serves port 5174).
 
-`airflow-webserver` should be healthy / running before you open the UI.
+Click **Refresh graph**, set target F1 to **0.99** and budget to **3**, then **Run loop**. The dashboard displays the eight-node workflow, target `high_fare`, experiment timeline, validation scores, and final holdout results. Select a node to inspect its execution notes.
 
-5. Open [http://localhost:8088](http://localhost:8088) and log in with `admin` / `admin` (unless `.env` overrides).
-6. Confirm the DAG list has:
-   - `lab_baseline_prep` — student lab (empty Graph until wired)
-   - `solution_baseline_prep` — instructor / filled reference
-   - `solution_baseline_and_trigger` — later reveal (stub)
+### Browser verification and screenshots
 
-Docker only. Do not install Airflow on your host.
+The updated interface was opened and visually inspected in the browser by the author, including the eight-node graph, experiment timeline, and final evaluation. The retained screenshots below show the updated interface and Random Forest results.
 
-**Run prep (UI):** unpause `solution_baseline_prep` → Trigger → Graph tab (tasks turn green).
+**Dashboard and validation F1 chart**
 
-![Airflow DAG graph for solution_baseline_prep](docs/images/airflow-dag.jpg)
+![NYC Taxi dashboard with high_fare target and validation F1 chart](screenshots/nyc_taxi_web_interface_top.png)
 
-**CLI alternative (still Docker):**
+**Expanded eight-node agent graph**
 
-```bash
-docker compose -f infra/docker-compose.yml --env-file .env --profile airflow run --rm airflow-prep-once
-```
+![Updated eight-node NYC Taxi LangGraph workflow](screenshots/nyc_taxi_live_graph.png)
 
-**Confirm publish**
+**Experiment timeline and evaluation**
 
-```bash
-ls -la datasets/airflow/merged_latest.csv
-ls -la artifacts/airflow/runs/
-```
+![Three completed experiments and final Random Forest evaluation](screenshots/nyc_taxi_web_interface_results.png)
 
-**Stop Airflow** (also stops the main stack + Vite if it was up):
+**Final model results**
 
-```bash
-make down-mac          # macOS
-# make down-windows    # Windows (Git Bash)
-```
+![Random Forest validation and holdout metrics after three experiments](screenshots/nyc_taxi_final_results.png)
 
-### Windows — Airflow
+### Submission evidence
 
-```powershell
-if (-not (Test-Path .env)) { Copy-Item .env.example .env }
-docker compose -f infra/docker-compose.yml --env-file .env --profile airflow up --build -d
-```
-
-Wait 1–2 minutes, then:
-
-```powershell
-docker compose -f infra/docker-compose.yml --env-file .env --profile airflow ps
-```
-
-**UI:** [http://localhost:8088](http://localhost:8088) — `admin` / `admin`  
-Same DAGs as above.
-
-**Run prep (UI):** unpause `solution_baseline_prep` → Trigger → Graph.
-
-**CLI alternative:**
-
-```powershell
-docker compose -f infra/docker-compose.yml --env-file .env --profile airflow run --rm airflow-prep-once
-```
-
-**Confirm publish**
-
-```powershell
-Get-Item datasets\airflow\merged_latest.csv
-Get-ChildItem artifacts\airflow\runs\
-```
-
-**Stop**
-
-```powershell
-docker compose -f infra/docker-compose.yml --env-file .env --profile airflow down
-```
-
-What the prep DAG does:
-
-`customers.csv` ⨝ `transactions.csv` → subset (~2000 rows) → train baseline → publish
-
-More detail: [`lab/airflow/README.md`](lab/airflow/README.md) · data: [`datasets/airflow/ATTRIBUTION.md`](datasets/airflow/ATTRIBUTION.md)
-
----
-
-## Section 2: LangGraph solution loop
-
-Goal: run the mini LangGraph loop at `/solution-loop`.
-
-**macOS:** `make start-mac` (see Quick start) is enough — backend + UI.  
-**Windows:** `make start-windows` from Git Bash.
-
-Then open [http://127.0.0.1:5173/solution-loop](http://127.0.0.1:5173/solution-loop)
-
-- After Section 1: dataset `merged_latest.csv`, target `is_fraud`
-- Without Airflow: e.g. `Titanic-Dataset.csv`, target `Survived`
-
-![Simple research loop UI with merged_latest.csv and live agent graph](docs/images/solution-loop.jpg)
-
-**Optional checks**
-
-```bash
-make health
-curl -s http://127.0.0.1:8000/solution-loop/info | python3 -m json.tool
-```
-
-**Backend only** (no Vite): `make up` then `make health`  
-**Frontend only** (stack already up): `make frontend`
-
-**Stop:** `make down-mac` or `make down-windows` (Vite + Docker).
-
-**CLI only (optional)** — needs local install once: `make install`
-
-```bash
-.venv/bin/python solution/langgraph/run_cli.py \
-  --dataset datasets/Titanic-Dataset.csv \
-  --target Survived \
-  --max-cycles 3
-```
-
-### Windows — simple loop
-
-`make start-windows` from Git Bash (see Quick start), then open `/solution-loop`.
-
-```powershell
-foreach ($port in 8000,8011,8002,8003,8004,8005,8006) {
-  Write-Host -NoNewline "localhost:$port -> "
-  try {
-    Invoke-RestMethod "http://127.0.0.1:$port/healthz" | Out-Null
-    Write-Host "ok"
-  } catch {
-    Write-Host "FAIL"
-  }
-}
-```
-
-**Stop**
-
-```powershell
-docker compose -f infra/docker-compose.yml --env-file .env down
-```
-
-**CLI only (optional)**
-
-```powershell
-python -m venv .venv
-.\.venv\Scripts\pip install -e ".[dev]"
-.\.venv\Scripts\python solution\langgraph\run_cli.py `
-  --dataset datasets\Titanic-Dataset.csv `
-  --target Survived `
-  --max-cycles 3
-```
-
----
-
-## Suggested classroom order
-
-| Order | What | Outcome |
-| --- | --- | --- |
-| 1 | Airflow **student** DAG `lab_baseline_prep` | Fill [`lab/airflow/dags/lab_baseline_prep.py`](lab/airflow/dags/lab_baseline_prep.py), wire deps → Graph fills → run |
-| 2 | (Optional reveal) instructor DAG | Baseline + `merged_latest.csv` via `solution_baseline_prep` |
-| 3 | LangGraph **Lab Loop** | Fill [`lab/langgraph/graph.py`](lab/langgraph/graph.py) → `/lab-loop` empty until ready → Run |
-| 4 | (Optional reveal) `/solution-loop` | Solution loop on the same CSV |
-| 5 | (Later) `solution_baseline_and_trigger` | Reveal how Airflow could call the loop |
-
-Guide UI: [http://127.0.0.1:5173/guide](http://127.0.0.1:5173/guide) after `make start-mac` / `make start-windows`.
-
-### Lab Loop (student LangGraph)
-
-With the web app running:
-
-1. Follow [`lab/langgraph/COPY_GUIDE.md`](lab/langgraph/COPY_GUIDE.md) — paste into [`lab/langgraph/graph.py`](lab/langgraph/graph.py) one step at a time
-2. Open [http://127.0.0.1:5173/lab-loop](http://127.0.0.1:5173/lab-loop)
-3. **Refresh graph**, then **Run loop**
-
-**macOS status check:** `python -m lab.langgraph.run_cli --status` (after `make install`)  
-**Windows status check:** `.\.venv\Scripts\python -m lab.langgraph.run_cli --status`
-
-### Airflow student DAG
-
-After Airflow is up, open the UI and find `lab_baseline_prep`. The Graph tab stays empty until the wiring block in [`lab/airflow/dags/lab_baseline_prep.py`](lab/airflow/dags/lab_baseline_prep.py) is uncommented. Copy steps: [`lab/airflow/COPY_GUIDE.md`](lab/airflow/COPY_GUIDE.md) or the in-app guide.
-
----
-
-## Useful ports
-
-| What | URL |
+| Requirement | Repository evidence |
 | --- | --- |
-| Frontend | http://127.0.0.1:5173 |
-| Gateway API | http://127.0.0.1:8000 |
-| Airflow UI | http://localhost:8088 |
-| MLflow (full stack) | http://127.0.0.1:5050 |
+| Successful Airflow execution and DAG graph view | Airflow screenshot above, showing all five tasks successful |
+| Airflow DAG source | [nyc_taxi_pipeline.py](lab/airflow/dags/nyc_taxi_pipeline.py) |
+| Modified agents and live graph | [nyc_taxi_graph.py](lab/langgraph/nyc_taxi_graph.py) and updated graph screenshot above |
+| Model evaluation | Validation table and final results screenshots above |
+| Run instructions and containerized setup | Commands above, root setup guide, and [Docker Compose](infra/docker-compose.yml) |
 
-## Make targets
-
-| Target | OS | What |
-| --- | --- | --- |
-| `make start-mac` | macOS | Ensure `.env`, Docker stack, wait for gateway, Vite UI |
-| `make start-windows` | Windows (Git Bash) | Same as `start-mac` |
-| `make down-mac` | macOS | Stop Vite (`lsof` :5173) + Docker (incl. Airflow) |
-| `make down-windows` | Windows (Git Bash) | Stop Vite (PowerShell :5173) + Docker (incl. Airflow) |
-| `make airflow` | both | Start Airflow profile (UI on :8088) |
-| `make up` | both | Docker stack only |
-| `make health` | both | Curl service `/healthz` ports |
-| `make frontend` | both | Vite only (stack already up) |
-| `make install` | both | Local `.venv` + editable install (CLI / tests) |
-
----
-
-## Full multi-agent lab (not required for the two demos above)
-
-### macOS
-
-```bash
-cp .env.example .env   # set MOCK_*=false for live research
-make start-mac
-```
-
-### Windows (Git Bash)
-
-```bash
-cp .env.example .env   # then edit MOCK_*=false for live research
-make start-windows
-```
-
-Upload `datasets/churn_sample.csv`, target `churned`.  
-Design canvas: [`AutoML_Research_Lab_demo_canvas.pdf`](AutoML_Research_Lab_demo_canvas.pdf) · mock script: [`docs/DEMO_SCRIPT.md`](docs/DEMO_SCRIPT.md)
+The CLI, focused workflow checks, live event stream, frontend/backend graph parity, and frontend build passed during implementation. No additional workflow execution was performed for this documentation review.
