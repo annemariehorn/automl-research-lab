@@ -1,12 +1,3 @@
-
-## NYC Taxi Mini-Assignment — Airflow + LangGraph
-
-My completed NYC Taxi data pipeline and machine learning assignment is documented here:
-
-**[View NYC Taxi Assignment, Results, and Screenshots](nyc_taxi/README.md)**
-
----
-
 # AutoML Research Lab: Student Setup
 
 Classroom demo in two parts. Start in **`lab/`**; peek at **`solution/`** when revealed; ignore **`advanced/`** until later.
