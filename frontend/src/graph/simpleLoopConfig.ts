@@ -4,6 +4,9 @@
 export type SimpleLoopNodeId =
   | 'load_data'
   | 'prepare_data'
+  | 'hypothesis_generator'
+  | 'memory_writer'
+  | 'context_builder'
   | 'train_model'
   | 'evaluate_model'
   | 'final_test'
@@ -32,16 +35,37 @@ export const SIMPLE_LOOP_NODES: SimpleLoopNode[] = [
   {
     id: 'load_data',
     title: 'Load NYC Taxi Data',
-    role: 'Read taxi trip and zone datasets',
+    role: 'Validate cleaned Airflow Parquet output',
     kind: 'file',
     service: 'data ingestion',
   },
   {
     id: 'prepare_data',
     title: 'Prepare Data',
-    role: 'Clean, transform and engineer features',
+    role: 'Create fixed splits and training-median target',
     kind: 'code',
     service: 'data preprocessing',
+  },
+  {
+    id: 'hypothesis_generator',
+    title: 'Hypothesis Generator',
+    role: 'Propose an untried model from validation feedback',
+    kind: 'code',
+    service: 'experiment planning',
+  },
+  {
+    id: 'memory_writer',
+    title: 'Memory Writer',
+    role: 'File configuration, validation results and judge feedback',
+    kind: 'store',
+    service: 'experiment memory',
+  },
+  {
+    id: 'context_builder',
+    title: 'Context Builder',
+    role: 'Summarize evidence for the next hypothesis',
+    kind: 'code',
+    service: 'research context',
   },
   {
     id: 'train_model',
@@ -76,9 +100,34 @@ export const SIMPLE_LOOP_EDGES: SimpleLoopEdge[] = [
     targetHandle: 'left-in',
   },
   {
-    id: 'e-prepare-train',
+    id: 'e-prepare-hypothesis',
     source: 'prepare_data',
+    target: 'hypothesis_generator',
+    kind: 'control',
+    sourceHandle: 'right-out',
+    targetHandle: 'left-in',
+  },
+  {
+    id: 'e-hypothesis_generator-train_model',
+    source: 'hypothesis_generator',
     target: 'train_model',
+    kind: 'control',
+    sourceHandle: 'right-out',
+    targetHandle: 'left-in',
+  },
+  {
+    id: 'e-memory_writer-context_builder',
+    label: 'retry',
+    source: 'memory_writer',
+    target: 'context_builder',
+    kind: 'control',
+    sourceHandle: 'right-out',
+    targetHandle: 'left-in',
+  },
+  {
+    id: 'e-context_builder-hypothesis_generator',
+    source: 'context_builder',
+    target: 'hypothesis_generator',
     kind: 'control',
     sourceHandle: 'right-out',
     targetHandle: 'left-in',
@@ -92,20 +141,19 @@ export const SIMPLE_LOOP_EDGES: SimpleLoopEdge[] = [
     targetHandle: 'left-in',
   },
   {
-    id: 'e-evaluate-retry',
+    id: 'e-evaluate-memory',
     source: 'evaluate_model',
-    target: 'train_model',
+    target: 'memory_writer',
     kind: 'control',
-    label: 'retry',
     sourceHandle: 'top-out',
     targetHandle: 'top-in',
   },
   {
-    id: 'e-evaluate-final',
-    source: 'evaluate_model',
+    id: 'e-memory-final',
+    source: 'memory_writer',
     target: 'final_test',
     kind: 'control',
-    label: 'accepted',
+    label: 'stop → holdout',
     sourceHandle: 'bottom-out',
     targetHandle: 'left-in',
   },
@@ -117,22 +165,31 @@ export const SIMPLE_LOOP_POSITIONS: Record<
 > = {
   load_data: { x: 0, y: 180 },
   prepare_data: { x: 280, y: 180 },
-  train_model: { x: 560, y: 180 },
-  evaluate_model: { x: 840, y: 180 },
-  final_test: { x: 1120, y: 180 },
+  hypothesis_generator: { x: 560, y: 180 },
+  memory_writer: { x: 1120, y: -80 },
+  context_builder: { x: 560, y: -80 },
+  train_model: { x: 840, y: 180 },
+  evaluate_model: { x: 1120, y: 180 },
+  final_test: { x: 1400, y: 180 },
 }
 
 export const SIMPLE_LOOP_FLOW = [
   'load_data',
   'prepare_data',
+  'hypothesis_generator',
   'train_model',
   'evaluate_model',
+  'memory_writer',
+  'context_builder',
   'final_test',
 ] as const
 
 export const GRAPH_NODE_TO_VISUAL: Record<string, SimpleLoopNodeId> = {
   load_data: 'load_data',
   prepare_data: 'prepare_data',
+  hypothesis_generator: 'hypothesis_generator',
+  memory_writer: 'memory_writer',
+  context_builder: 'context_builder',
   train_model: 'train_model',
   evaluate_model: 'evaluate_model',
   final_test: 'final_test',

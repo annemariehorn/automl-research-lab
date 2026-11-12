@@ -1,6 +1,7 @@
 """Custom LangGraph workflow for NYC taxi fare classification."""
 
 from pathlib import Path
+from tempfile import mkdtemp
 from typing import TypedDict
 
 import pandas as pd
@@ -25,8 +26,6 @@ REPO = Path(__file__).resolve().parents[2]
 
 DATA_PATH = REPO / "artifacts" / "nyc_taxi" / "taxi_ml_ready.parquet"
 
-SPLIT_DIR = REPO / "artifacts" / "nyc_taxi" / "ml_splits"
-
 
 # --------------------------------------------------
 # GRAPH STATE
@@ -34,6 +33,12 @@ SPLIT_DIR = REPO / "artifacts" / "nyc_taxi" / "ml_splits"
 
 
 class TaxiState(TypedDict, total=False):
+    split_dir: str
+    hypothesis: dict
+    context: dict
+    feedback: str
+    recommendation: str
+    current_experiment: dict
     dataset_path: str
     row_count: int
     feature_columns: list[str]
@@ -72,6 +77,9 @@ def load_data(state: TaxiState) -> dict:
         raise FileNotFoundError(
             f"Dataset not found: {path}. Run the Airflow DAG first."
         )
+
+    if state.get("max_cycles", 3) < 1:
+        raise ValueError("max_cycles must be at least 1")
 
     df = pd.read_parquet(path)
 
@@ -141,20 +149,21 @@ def prepare_data(state: TaxiState) -> dict:
     for split in (train_df, val_df, test_df):
         split["high_fare"] = (split["fare_amount"] > median_fare).astype(int)
 
-    SPLIT_DIR.mkdir(parents=True, exist_ok=True)
+    # Never overwrite existing datasets or share mutable splits across runs.
+    split_dir = Path(mkdtemp(prefix="nyc-taxi-splits-"))
 
     train_df.to_parquet(
-        SPLIT_DIR / "train.parquet",
+        split_dir / "train.parquet",
         index=False,
     )
 
     val_df.to_parquet(
-        SPLIT_DIR / "validation.parquet",
+        split_dir / "validation.parquet",
         index=False,
     )
 
     test_df.to_parquet(
-        SPLIT_DIR / "test.parquet",
+        split_dir / "test.parquet",
         index=False,
     )
 
@@ -164,6 +173,7 @@ def prepare_data(state: TaxiState) -> dict:
     print(f"High-fare threshold: ${median_fare:.2f}")
 
     return {
+        "split_dir": str(split_dir),
         "feature_columns": [
             "trip_distance",
             "passenger_count",
@@ -238,9 +248,9 @@ def get_models():
 def train_model(state: TaxiState) -> dict:
     """Train and validate the next candidate model."""
 
-    train_df = pd.read_parquet(SPLIT_DIR / "train.parquet")
+    train_df = pd.read_parquet(Path(state["split_dir"]) / "train.parquet")
 
-    val_df = pd.read_parquet(SPLIT_DIR / "validation.parquet")
+    val_df = pd.read_parquet(Path(state["split_dir"]) / "validation.parquet")
 
     features = state["feature_columns"]
 
@@ -251,10 +261,8 @@ def train_model(state: TaxiState) -> dict:
     y_val = val_df["high_fare"]
 
     models = get_models()
-    model_names = list(models.keys())
-
+    model_name = state["hypothesis"]["model"]
     cycle = state.get("cycle", 0)
-    model_name = model_names[cycle % len(model_names)]
 
     pipeline = Pipeline(
         [
@@ -274,14 +282,15 @@ def train_model(state: TaxiState) -> dict:
         zero_division=0,
     )
 
-    history = state.get("history", []) + [
-        {
-            "cycle": cycle + 1,
-            "model": model_name,
-            "accuracy": round(float(accuracy), 4),
-            "f1_score": round(float(f1), 4),
-        }
-    ]
+    experiment = {
+        "cycle": cycle + 1,
+        "model": model_name,
+        "configuration": models[model_name].get_params(),
+        "hypothesis": state["hypothesis"]["hypothesis"],
+        "rationale": state["hypothesis"]["rationale"],
+        "accuracy": float(accuracy),
+        "f1_score": float(f1),
+    }
 
     print(f"\nCycle {cycle + 1}: {model_name}")
     print(f"Validation accuracy: {accuracy:.4f}")
@@ -292,7 +301,7 @@ def train_model(state: TaxiState) -> dict:
         "accuracy": float(accuracy),
         "f1_score": float(f1),
         "cycle": cycle + 1,
-        "history": history,
+        "current_experiment": experiment,
     }
 
 
@@ -304,8 +313,8 @@ def train_model(state: TaxiState) -> dict:
 def evaluate_model(state: TaxiState) -> dict:
     """Decide whether to try another model."""
 
-    history = state["history"]
-    current = history[-1]
+    current = state["current_experiment"]
+    history = state.get("history", []) + [current]
 
     best = max(
         history,
@@ -323,20 +332,95 @@ def evaluate_model(state: TaxiState) -> dict:
         decision = "stop"
         reason = "Maximum training cycles reached"
 
+    elif len(history) >= len(get_models()):
+        decision = "stop"
+        reason = "All distinct candidate configurations evaluated"
+
     else:
         decision = "retry"
-        reason = "Try another model to improve performance"
+        reason = "Validation F1 below target; request a new hypothesis"
+
+    previous_best = max((r["f1_score"] for r in history[:-1]), default=0.0)
+    improvement = current["f1_score"] - previous_best
+    # Strong linear evidence favors an ensemble; weaker evidence first tests a
+    # smaller nonlinear tree; then test the remaining untried family.
+    if current["model"] == "Logistic Regression":
+        recommendation = "Random Forest" if current["f1_score"] >= 0.88 else "Decision Tree"
+    elif current["model"] == "Decision Tree":
+        recommendation = "Random Forest"
+    else:
+        recommendation = "Decision Tree"
+    remaining = [name for name in get_models()
+                 if name not in {r["model"] for r in history}]
+    if recommendation not in remaining:
+        recommendation = remaining[0] if remaining else "none (candidates exhausted)"
+    next_direction = recommendation if decision == "retry" else "none (model selection finished)"
+    feedback = (
+        f"{current['model']} validation F1={current['f1_score']:.6f}; "
+        f"change versus prior best={improvement:+.6f}; "
+        f"best={best['model']} ({best['f1_score']:.6f}), target={target_score:.4f}. "
+        f"{reason}. Next untried direction: {next_direction}."
+    )
 
     print(f"Decision: {decision}")
     print(f"Reason: {reason}")
     print(f"Best model so far: {best['model']}")
 
     return {
+        "feedback": feedback,
+        "recommendation": recommendation,
         "best_model": best["model"],
         "best_f1_score": best["f1_score"],
         "decision": decision,
         "stop_reason": reason,
     }
+
+
+def memory_writer(state: TaxiState) -> dict:
+    """File the completed trial in the single canonical history (idempotently)."""
+    history = list(state.get("history", []))
+    experiment = {**state["current_experiment"],
+                  "feedback": state["feedback"], "decision": state["decision"]}
+    if any(r["cycle"] == experiment["cycle"] for r in history):
+        return {"history": history}
+    return {"history": history + [experiment]}
+
+
+def context_builder(state: TaxiState) -> dict:
+    """Compact validation-only brief; do not copy the complete experiment log."""
+    history = state["history"]
+    best = max(history, key=lambda r: r["f1_score"])
+    return {"context": {
+        "tried_models": [r["model"] for r in history],
+        "summary": "; ".join(f"{r['model']}: F1={r['f1_score']:.6f}" for r in history),
+        "best_model": best["model"],
+        "best_f1_score": best["f1_score"],
+        "feedback": state["feedback"],
+        "recommendation": state["recommendation"],
+    }}
+
+
+def hypothesis_generator(state: TaxiState) -> dict:
+    """Choose an untried experiment using the judge's validation-only brief."""
+    context = state.get("context", {})
+    tried = context.get("tried_models", [])
+    available = [name for name in get_models() if name not in tried]
+    if not available:
+        raise ValueError("No untried candidate remains")
+    if not tried:
+        model = "Logistic Regression"
+        hypothesis = "A linear classifier establishes a distance/time/borough baseline."
+        rationale = "First experiment; no validation evidence yet."
+    else:
+        recommended = context["recommendation"]
+        model = recommended if recommended in available else available[0]
+        hypothesis = (
+            "An ensemble may improve generalization through averaging nonlinear trees."
+            if model == "Random Forest" else
+            "A shallow tree may capture nonlinear fare boundaries with limited complexity."
+        )
+        rationale = f"{context['summary']}. Judge: {context['feedback']} Testing untried {model}."
+    return {"hypothesis": {"model": model, "hypothesis": hypothesis, "rationale": rationale}}
 
 
 # --------------------------------------------------
@@ -345,7 +429,7 @@ def evaluate_model(state: TaxiState) -> dict:
 
 
 def route_after_evaluation(state: TaxiState) -> str:
-    """Route to another training cycle or final testing."""
+    """After recording the trial, route on the judge's unchanged decision."""
 
     if state["decision"] == "retry":
         return "retry"
@@ -361,11 +445,11 @@ def route_after_evaluation(state: TaxiState) -> str:
 def final_test(state: TaxiState) -> dict:
     """Test the best model on untouched holdout data."""
 
-    train_df = pd.read_parquet(SPLIT_DIR / "train.parquet")
+    train_df = pd.read_parquet(Path(state["split_dir"]) / "train.parquet")
 
-    val_df = pd.read_parquet(SPLIT_DIR / "validation.parquet")
+    val_df = pd.read_parquet(Path(state["split_dir"]) / "validation.parquet")
 
-    test_df = pd.read_parquet(SPLIT_DIR / "test.parquet")
+    test_df = pd.read_parquet(Path(state["split_dir"]) / "test.parquet")
 
     development_df = pd.concat(
         [train_df, val_df],
@@ -429,6 +513,9 @@ def build_graph():
 
     graph.add_node("load_data", load_data)
     graph.add_node("prepare_data", prepare_data)
+    graph.add_node("hypothesis_generator", hypothesis_generator)
+    graph.add_node("memory_writer", memory_writer)
+    graph.add_node("context_builder", context_builder)
     graph.add_node("train_model", train_model)
     graph.add_node("evaluate_model", evaluate_model)
     graph.add_node("final_test", final_test)
@@ -442,7 +529,7 @@ def build_graph():
 
     graph.add_edge(
         "prepare_data",
-        "train_model",
+        "hypothesis_generator",
     )
 
     graph.add_edge(
@@ -450,15 +537,18 @@ def build_graph():
         "evaluate_model",
     )
 
+    graph.add_edge("evaluate_model", "memory_writer")
     graph.add_conditional_edges(
-        "evaluate_model",
+        "memory_writer",
         route_after_evaluation,
         {
-            "retry": "train_model",
+            "retry": "context_builder",
             "final_test": "final_test",
         },
     )
 
+    graph.add_edge("hypothesis_generator", "train_model")
+    graph.add_edge("context_builder", "hypothesis_generator")
     graph.add_edge("final_test", END)
 
     return graph.compile()
@@ -466,22 +556,14 @@ def build_graph():
 
 def get_status():
     """Describe the NYC Taxi graph to the live interface."""
+    compiled = build_graph().get_graph()
     return {
         "ready": True,
-        "nodes": [
-            "load_data",
-            "prepare_data",
-            "train_model",
-            "evaluate_model",
-            "final_test",
-        ],
-        "edges": [
-            ["load_data", "prepare_data"],
-            ["prepare_data", "train_model"],
-            ["train_model", "evaluate_model"],
-            ["evaluate_model", "train_model"],
-            ["evaluate_model", "final_test"],
-        ],
+        "nodes": [name for name in compiled.nodes
+                  if name not in {"__start__", "__end__"}],
+        "edges": [[edge.source, edge.target]
+                  for edge in compiled.edges
+                  if edge.source != "__start__" and edge.target != "__end__"],
         "missing_nodes": [],
         "error": None,
     }
@@ -496,6 +578,8 @@ def stream_lab_loop(
     model=None,
 ):
     """Stream NYC Taxi LangGraph execution to the live interface."""
+    if max_cycles < 1:
+        raise ValueError("max_cycles must be at least 1")
     graph = build_graph()
 
     state = {
@@ -505,24 +589,33 @@ def stream_lab_loop(
         "history": [],
     }
 
+    if dataset_path:
+        state["dataset_path"] = str(dataset_path)
+
     yield {"type": "run_started"}
 
-    for update in graph.stream(
+    previous_node = None
+    # Debug task events arrive before execution, unlike update-only events.
+    for event in graph.stream(
         state,
-        stream_mode="updates",
+        stream_mode="debug",
         config={"recursion_limit": 8 + max_cycles * 6},
     ):
-        for node_name, node_output in update.items():
-            yield {
-                "type": "node_started",
-                "node": node_name,
-            }
+        payload = event["payload"]
+        if event["type"] == "task":
+            yield {"type": "node_started", "node": payload["name"],
+                   "previous_node": previous_node}
+        elif event["type"] == "task_result":
+            if payload.get("error"):
+                raise RuntimeError(payload["error"])
+            node_output = dict(payload["result"])
+            state.update(node_output)
+            previous_node = payload["name"]
             yield {
                 "type": "node_completed",
-                "node": node_name,
+                "node": payload["name"],
                 "output": node_output,
             }
-            state.update(node_output)
 
     yield {
         "type": "run_completed",

@@ -1,4 +1,3 @@
-
 # NYC Taxi Data Pipeline and ML Workflow
 
 ## Project Overview
@@ -35,7 +34,7 @@ It contains five tasks:
 2. **clean_taxi_zones:** Validates location IDs and cleans borough and zone information.
 3. **merge_taxi_data:** Joins taxi trips with zone information using pickup location IDs.
 4. **load_to_postgres:** Loads the merged dataset into the PostgreSQL `taxi_trips_cleaned` table.
-5. **read_from_postgres:** Reads the cleaned records from PostgreSQL and saves a machine-learning-ready Parquet file.
+5. **read_from_postgres:** Reads the cleaned records from PostgreSQL, verifies the row count, and saves a machine-learning-ready Parquet file.
 
 The two cleaning tasks run independently before the merge, demonstrating parallel task execution.
 
@@ -61,195 +60,107 @@ The cleaned data is stored in PostgreSQL and exported to:
 
 `artifacts/nyc_taxi/taxi_ml_ready.parquet`
 
+Analysis of this database read-back export confirms 18,689 records and a mean fare of $17.92. Cleaning removed 6.56% of the sampled trips.
+
 ### Successful Airflow DAG Execution
 
-The screenshot below shows the completed Airflow pipeline, including the two parallel cleaning tasks, merge, PostgreSQL load, and database read-back.
+The Airflow Graph view below shows all five tasks successful, including the parallel cleaning branches, merge, PostgreSQL load, and database read-back. It documents both successful execution and the DAG graph.
 
 ![Successful Airflow pipeline](../../screenshots/nyc_taxi_airflow_success.png)
 
-## Part 2: Custom LangGraph ML Workflow
+## Part 2: Agent-Based LangGraph ML Workflow
 
-### Objective
+The classroom research loop is adapted in `lab/langgraph/nyc_taxi_graph.py` with explicit deterministic agents. It runs without an LLM API, API key, or external memory service.
 
-Predict whether a taxi trip has a fare above the training-set median of $12.80.
+### Agents and executable graph
 
-The prediction target is `high_fare`, where:
-
-- `1`: Fare greater than $12.80
-- `0`: Fare less than or equal to $12.80
-
-The median threshold is calculated using training data only to avoid test-data leakage.
-
-### Input Features
-
-The classification models use:
-
-- Trip distance
-- Passenger count
-- Pickup hour
-- Pickup day of week
-- Pickup borough
-
-The actual fare amount is excluded from model inputs because it defines the target.
-
-### Graph Structure
-
-The custom graph is implemented in:
-
-`lab/langgraph/nyc_taxi_graph.py`
-
-It contains five nodes:
-
-1. **load_data:** Loads and validates the Airflow output.
-2. **prepare_data:** Creates training, validation, and test splits.
-3. **train_model:** Trains a candidate classification model.
-4. **evaluate_model:** Evaluates validation performance and decides whether to retry.
-5. **final_test:** Retrains the best candidate on development data and evaluates it on the held-out test set.
-
-### Conditional Loop
-
-After each training cycle, the workflow checks the validation F1-score.
-
-- If the score reaches the target, the workflow stops experimenting.
-- Otherwise, it tries another model, provided the maximum number of cycles has not been reached.
-- After stopping, it selects the candidate with the highest validation F1-score.
-
-The workflow compares Logistic Regression, Decision Tree, and Random Forest.
-
-This is a deterministic, rule-based LangGraph workflow rather than an LLM-powered agent.
-
-### LangGraph Structure Visualization
-
-The graph below shows the five-node workflow, including the conditional retry path from evaluation back to training.
-
-![Custom LangGraph workflow](../../screenshots/nyc_taxi_langgraph_graph.png)
-
-### Data Splitting
-
-- Training: 60% (11,213 records)
-- Validation: 20% (3,738 records)
-- Test: 20% (3,738 records)
-
-The final test dataset is reserved for evaluation after model selection.
-
-### Model Results
-
-To demonstrate all three training cycles, the validation F1 target was set to 0.99 with a maximum of three cycles.
-
-| Model | Validation Accuracy | Validation F1 |
-| --- | --- | --- |
-| Logistic Regression | 0.8965 | 0.8864 |
-| Decision Tree | 0.9021 | 0.8922 |
-| Random Forest | 0.9016 | 0.8922 |
-
-**Selected model:** Decision Tree
-
-**Final holdout results:**
-
-- Test accuracy: 0.9010 (90.10%)
-- Test F1-score: 0.8931
-
-The workflow stopped after three cycles because it reached the maximum number of allowed attempts.
-
-Results may vary slightly between execution environments. The model results reported above correspond to the final live LangGraph run; earlier terminal screenshots document a separate successful execution.
-
-### Terminal Execution Results
-
-The following screenshots demonstrate a separate successful execution of the LangGraph workflow through the command line.
-
-![LangGraph training cycles](../../screenshots/nyc_taxi_langgraph_cycles.png)
-
-![LangGraph terminal evaluation results](../../screenshots/nyc_taxi_langgraph_results.png)
-
-## Live LangGraph Web Interface
-
-The NYC Taxi ML workflow can also be executed through the repository's live web interface.
-
-The interface connects to the LangGraph backend and displays workflow execution, model comparisons, validation scores, and final evaluation results.
-
-### Running the Web Interface
-
-1. Start the Docker services and frontend using the repository's development setup.
-2. Open `http://localhost:5174/lab-loop`.
-3. Set the target F1 score to `0.99` and the experiment budget to `3`.
-4. Click **Run loop**.
-
-The interface displays the five-node LangGraph workflow and updates node statuses during execution.
-
-It also includes:
-
-- A live agent graph showing workflow progress
-- An experiment timeline displaying all three model training cycles
-- A validation F1 chart comparing model performance
-- A comparison of the best and previous experiments
-- A final evaluation panel displaying the selected model, accuracy, and F1-score
-
-**Note:** The web interface runs locally and requires the Docker services and frontend to be started. The localhost URL is not a publicly hosted webpage. Screenshots of the completed interface are included below.
-
-### Web Interface Overview
-
-The screenshot below shows the NYC Taxi ML Loop webpage, including the completed LangGraph workflow and validation F1 chart.
-
-![NYC Taxi web interface and validation chart](../../screenshots/nyc_taxi_web_interface_top.png)
-
-### Experiment Timeline and Final Results
-
-The following screenshot shows the three completed experiments and final model evaluation.
-
-![Completed experiments and final model results](../../screenshots/nyc_taxi_web_interface_results.png)
-
-### Expanded Live LangGraph Visualization
-
-This screenshot provides a closer view of the completed workflow and its conditional connections.
-
-![Completed live LangGraph workflow](../../screenshots/nyc_taxi_live_graph.png)
-
-### Final Evaluation Screenshot
-
-The final evaluation panel confirms that the Decision Tree classifier was selected after three training cycles.
-
-![Final model evaluation](../../screenshots/nyc_taxi_final_results.png)
-
-## Running the Workflow
-
-### Airflow
-
-Start the Docker-based Airflow environment from the repository root:
-
-```bash
-make airflow
+```mermaid
+flowchart LR
+  load_data --> prepare_data --> hypothesis_generator --> train_model --> evaluate_model
+  evaluate_model --> memory_writer
+  memory_writer -->|retry| context_builder --> hypothesis_generator
+  memory_writer -->|stop| final_test --> END
 ```
 
-Open Airflow at `http://localhost:8088` and trigger the `nyc_taxi_pipeline` DAG.
+- **Data Scientist — load_data / prepare_data:** Validate the cleaned Airflow output and split it 60/20/20 with seed 42: 11,213 training, 3,738 validation, and 3,738 test records. The target is `high_fare`: fare above the training-set median ($12.80). Features are trip distance, passenger count, pickup hour, pickup weekday, and borough; fare and target are excluded from inputs.
+- **Hypothesis Generator:** Establish a Logistic Regression baseline, then consume recorded results and judge feedback. A baseline validation F1 of at least 0.88 leads to Random Forest; a lower score leads to a shallow Decision Tree. Subsequent experiments test remaining untried candidates, avoiding repeats.
+- **ML Engineer — train_model:** Train the proposed candidate with preprocessing fitted on training data only; produce its configuration, rationale, validation accuracy, and F1.
+- **Judge — evaluate_model:** Compare validation results, select the best model using full-precision F1, and provide feedback. Stop when the target is achieved, the experiment budget is reached, or all candidates have been tried.
+- **Memory Writer:** Record each experiment's configuration, validation metrics, and judge feedback once in LangGraph state, including the terminal experiment before final testing.
+- **Context Builder:** Summarize recorded experiments, the best model, and the latest judge feedback for the next hypothesis.
+- **Final Holdout Evaluation — final_test:** Refit the selected model on training plus validation data and evaluate once on the held-out test split. Holdout metrics never influence experimentation or selection.
 
-The DAG performs data cleaning, merging, PostgreSQL loading, and database read-back.
+The graph has eight nodes because the Data Scientist role uses two nodes. Every judge decision passes through Memory Writer before the conditional retry or completion path.
 
-### LangGraph Command Line
+### Verified results — updated workflow, November 12, 2026
 
-From the repository root, activate the Python environment with the required dependencies installed and run:
+Executed the existing CLI in the running gateway container against the Part 1 export: **18,689 rows**, target F1 **0.99**, budget **3**.
+
+| Experiment | Model | Validation accuracy | Validation F1 |
+| --- | --- | --- | --- |
+| 1 | Logistic Regression | 0.896469 | 0.886410 |
+| 2 | Random Forest | 0.901284 | 0.892200 |
+| 3 | Decision Tree | 0.902087 | 0.892163 |
+
+**Selected: Random Forest.** Validation F1: **0.8922**; holdout accuracy: **0.9016** (90.16%); holdout F1: **0.8951**. The workflow stopped at the **three-experiment budget**; the 0.99 target was not achieved.
+
+Nonlinear models improved over the linear baseline. Random Forest narrowly beat Decision Tree on validation F1; both round to 0.8922 at four decimals, so selection uses full precision. Results may vary across scikit-learn versions.
+
+### Run both workflows
+
+The repository provides Docker Compose and service/Airflow Dockerfiles in `infra/`. Follow the [root setup guide](../../README.md#prerequisites) for prerequisites and environment setup. From the repository root:
+
+```bash
+# Part 1 (if the cleaned export is not already available)
+make airflow
+# Open http://localhost:8088 and trigger nyc_taxi_pipeline.
+
+# Part 2, using the existing container's installed dependencies
+# Start the existing stack first if necessary: make up
+docker compose -f infra/docker-compose.yml --env-file .env exec -w /packages gateway \
+  python -m lab.langgraph.nyc_taxi_run
+```
+
+With pandas, pyarrow, scikit-learn, and langgraph installed in an active local Python environment, the original CLI also works:
 
 ```bash
 python -m lab.langgraph.nyc_taxi_run
 ```
 
-The command prints the training cycles, validation scores, routing decisions, selected model, and final test metrics.
+### Live web interface
 
-### Live Web Interface
+Start the existing development setup with `make start-mac` (or `make start-windows`). If the stack is already running, use `make frontend`. Open `/lab-loop` on the Vite URL printed in the terminal (normally port 5173; this workspace also serves port 5174).
 
-From the repository root, start the Docker services and frontend using the repository's development setup.
+Click **Refresh graph**, set target F1 to **0.99** and budget to **3**, then **Run loop**. The dashboard displays the eight-node workflow, target `high_fare`, experiment timeline, validation scores, and final holdout results. Select a node to inspect its execution notes.
 
-Open the local web interface at:
+### Browser verification and screenshots
 
-`http://localhost:5174/lab-loop`
+The updated interface was opened and visually inspected in the browser by the author, including the eight-node graph, experiment timeline, and final evaluation. The retained screenshots below show the updated interface and Random Forest results.
 
-Set the target F1 score to `0.99`, the budget to `3`, and click **Run loop**.
+**Dashboard and validation F1 chart**
 
-## Conclusion
+![NYC Taxi dashboard with high_fare target and validation F1 chart](../../screenshots/nyc_taxi_web_interface_top.png)
 
-This project demonstrates a reproducible workflow connecting data engineering and machine learning.
+**Expanded eight-node agent graph**
 
-Airflow orchestrates data cleaning, merging, PostgreSQL storage, and data retrieval. LangGraph uses the resulting dataset to compare classification models, repeat experiments based on validation performance, and evaluate the selected model on held-out data.
+![Updated eight-node NYC Taxi LangGraph workflow](../../screenshots/nyc_taxi_live_graph.png)
 
-The final Decision Tree classifier achieved 90.10% test accuracy and an F1-score of 0.8931.
+**Experiment timeline and evaluation**
 
-The live web interface provides a visual representation of the LangGraph workflow, allowing users to observe completed training cycles, compare validation performance, and inspect final model evaluation results.
+![Three completed experiments and final Random Forest evaluation](../../screenshots/nyc_taxi_web_interface_results.png)
+
+**Final model results**
+
+![Random Forest validation and holdout metrics after three experiments](../../screenshots/nyc_taxi_final_results.png)
+
+### Submission evidence
+
+| Requirement | Repository evidence |
+| --- | --- |
+| Successful Airflow execution and DAG graph view | Airflow screenshot above, showing all five tasks successful |
+| Airflow DAG source | [nyc_taxi_pipeline.py](../../lab/airflow/dags/nyc_taxi_pipeline.py) |
+| Modified agents and live graph | [nyc_taxi_graph.py](../../lab/langgraph/nyc_taxi_graph.py) and updated graph screenshot above |
+| Model evaluation | Validation table and final results screenshots above |
+| Run instructions and containerized setup | Commands above, root setup guide, and [Docker Compose](../../infra/docker-compose.yml) |
+
+The CLI, focused workflow checks, live event stream, frontend/backend graph parity, and frontend build passed during implementation. No additional workflow execution was performed for this documentation review.

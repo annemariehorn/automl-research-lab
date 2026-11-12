@@ -122,6 +122,7 @@ function initialNodes(
 function LiveSimpleLoopGraphInner({
   runtime,
   activeNodeId,
+  activeEdgeKey,
   datasetLabel,
   targetColumn,
   visibleNodeIds,
@@ -129,6 +130,7 @@ function LiveSimpleLoopGraphInner({
 }: {
   runtime: SimpleLoopRuntime
   activeNodeId: string | null
+  activeEdgeKey?: string | null
   datasetLabel?: string | null
   targetColumn?: string | null
   visibleNodeIds?: string[]
@@ -271,7 +273,9 @@ function LiveSimpleLoopGraphInner({
 
       return true
     }).map((e) => {
-      const animated = running.has(e.target)
+      const animated = running.has(e.target) && (
+        activeEdgeKey === undefined || activeEdgeKey === `${e.source}->${e.target}`
+      )
 
       return {
         id: e.id,
@@ -283,7 +287,7 @@ function LiveSimpleLoopGraphInner({
         ...edgeStyle(e.kind, animated),
       }
     })
-  }, [runtime, visibleIds, edgeKeySet])
+  }, [runtime, visibleIds, edgeKeySet, activeEdgeKey])
 
   const onNodeClick: NodeMouseHandler = (_e, node) => {
     setSelectedId(node.id)
@@ -424,6 +428,7 @@ function LiveSimpleLoopGraphInner({
 export function LiveSimpleLoopGraph(props: {
   runtime: SimpleLoopRuntime
   activeNodeId: string | null
+  activeEdgeKey?: string | null
   datasetLabel?: string | null
   targetColumn?: string | null
   visibleNodeIds?: string[]

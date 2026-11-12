@@ -16,6 +16,7 @@ import type { ExperimentEntry, SessionState } from '../types/events'
 const TAXI_DATASET = '/packages/artifacts/nyc_taxi/taxi_ml_ready.parquet'
 const DATASET_NAME = 'taxi_ml_ready.parquet'
 const TARGET_COLUMN = 'fare_amount'
+const TARGET_DISPLAY = 'high_fare (fare exceeds the training-set median)'
 
 const METRIC = 'f1'
 const STRATEGY = 'model_search' as const
@@ -23,6 +24,9 @@ const TRAIN_TIMEOUT = 120
 const SELF_HEAL_BUDGET = 3
 
 type TaxiOutput = {
+  hypothesis?: { model: string; hypothesis: string; rationale: string }
+  feedback?: string
+  context?: { summary: string }
   dataset_path?: string
   row_count?: number
   model_name?: string
@@ -51,6 +55,7 @@ type TaxiResult = TaxiOutput & {
 type StreamEvent = {
   type: string
   node?: string
+  previous_node?: string | null
   output?: TaxiOutput
   result?: TaxiResult
   message?: string
@@ -93,6 +98,7 @@ export function LabLoopPage() {
 
   const [runtime, setRuntime] = useState<SimpleLoopRuntime>({})
   const [activeNodeId, setActiveNodeId] = useState<string | null>(null)
+  const [activeEdgeKey, setActiveEdgeKey] = useState<string | null>(null)
 
   const [experiments, setExperiments] = useState<ExperimentEntry[]>([])
   const [liveBest, setLiveBest] = useState<number | null>(null)
@@ -145,6 +151,7 @@ export function LabLoopPage() {
     setResult(null)
     setRuntime({})
     setActiveNodeId(null)
+    setActiveEdgeKey(null)
     setExperiments([])
     setLiveBest(null)
     setLiveCycle(0)
@@ -180,6 +187,7 @@ export function LabLoopPage() {
       runningRef.current = false
       setBusy(false)
       setActiveNodeId(null)
+      setActiveEdgeKey(null)
       source.close()
 
       if (sourceRef.current === source) {
@@ -205,6 +213,7 @@ export function LabLoopPage() {
         const node = ev.node
 
         setActiveNodeId(node)
+        setActiveEdgeKey(ev.previous_node ? `${ev.previous_node}->${node}` : null)
 
         setRuntime((prev) =>
           setStatus(prev, node, 'running'),
@@ -228,6 +237,10 @@ export function LabLoopPage() {
         if (node === 'prepare_data') {
           note = 'Training and test data prepared'
         }
+
+        if (node === 'hypothesis_generator') note = output.hypothesis?.rationale
+        if (node === 'memory_writer') note = 'Experiment and judge feedback filed'
+        if (node === 'context_builder') note = output.context?.summary
 
         if (node === 'train_model') {
           if (
@@ -276,9 +289,9 @@ export function LabLoopPage() {
             setLiveBest(output.best_f1_score)
           }
 
-          note = output.decision
+          note = output.feedback ?? (output.decision
             ? `Decision: ${output.decision}`
-            : 'Model evaluated'
+            : 'Model evaluated')
 
           if (output.stop_reason) {
             setStopReason(output.stop_reason)
@@ -296,6 +309,7 @@ export function LabLoopPage() {
               : 'Final test completed'
         }
 
+        setActiveEdgeKey(null)
         setRuntime((prev) =>
           setStatus(prev, node, 'completed', note),
         )
@@ -424,7 +438,7 @@ export function LabLoopPage() {
               : 'idle',
         mode: 'live',
         dataset: DATASET_NAME,
-        targetColumn: TARGET_COLUMN,
+        targetColumn: TARGET_DISPLAY,
         metric: METRIC,
         targetScore,
         experimentBudget: maxCycles,
@@ -573,7 +587,7 @@ export function LabLoopPage() {
             Target:
           </span>{' '}
           <span className="text-paper">
-            {TARGET_COLUMN}
+            {TARGET_DISPLAY}
           </span>
         </div>
 
@@ -606,8 +620,9 @@ export function LabLoopPage() {
           <LiveSimpleLoopGraph
             runtime={runtime}
             activeNodeId={activeNodeId}
+            activeEdgeKey={activeEdgeKey}
             datasetLabel={DATASET_NAME}
-            targetColumn={TARGET_COLUMN}
+            targetColumn={TARGET_DISPLAY}
             visibleNodeIds={visibleNodeIds}
             visibleEdgeKeys={visibleEdgeKeys}
           />
