@@ -462,3 +462,69 @@ def build_graph():
     graph.add_edge("final_test", END)
 
     return graph.compile()
+
+
+def get_status():
+    """Describe the NYC Taxi graph to the live interface."""
+    return {
+        "ready": True,
+        "nodes": [
+            "load_data",
+            "prepare_data",
+            "train_model",
+            "evaluate_model",
+            "final_test",
+        ],
+        "edges": [
+            ["load_data", "prepare_data"],
+            ["prepare_data", "train_model"],
+            ["train_model", "evaluate_model"],
+            ["evaluate_model", "train_model"],
+            ["evaluate_model", "final_test"],
+        ],
+        "missing_nodes": [],
+        "error": None,
+    }
+
+
+def stream_lab_loop(
+    dataset_path=None,
+    target_column=None,
+    target_score=0.99,
+    max_cycles=3,
+    seed=42,
+    model=None,
+):
+    """Stream NYC Taxi LangGraph execution to the live interface."""
+    graph = build_graph()
+
+    state = {
+        "cycle": 0,
+        "max_cycles": max_cycles,
+        "target_score": target_score,
+        "history": [],
+    }
+
+    yield {"type": "run_started"}
+
+    for update in graph.stream(
+        state,
+        stream_mode="updates",
+        config={"recursion_limit": 8 + max_cycles * 6},
+    ):
+        for node_name, node_output in update.items():
+            yield {
+                "type": "node_started",
+                "node": node_name,
+            }
+            yield {
+                "type": "node_completed",
+                "node": node_name,
+                "output": node_output,
+            }
+            state.update(node_output)
+
+    yield {
+        "type": "run_completed",
+        "result": state,
+    }

@@ -8,9 +8,19 @@ import os
 import sys
 from pathlib import Path
 
-from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile, status
+from fastapi import (
+    FastAPI,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+    status,
+)
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
+
 
 def _repo_root() -> Path:
     here = Path(__file__).resolve().parent
@@ -53,7 +63,11 @@ from services.gateway.app.loop_runs import loop_run_store  # noqa: E402
 SERVICE_NAME = "gateway"
 # Env default for health; per-session mode comes from CreateSessionRequest.
 DEFAULT_MODE = os.getenv("GATEWAY_DEFAULT_MODE", "live")
-MOCK_DATASET_SERVICE = os.getenv("MOCK_DATASET_SERVICE", "false").lower() in {"1", "true", "yes"}
+MOCK_DATASET_SERVICE = os.getenv("MOCK_DATASET_SERVICE", "false").lower() in {
+    "1",
+    "true",
+    "yes",
+}
 DATASET_SERVICE_URL = os.getenv("DATASET_SERVICE_URL", "http://dataset_service:8004")
 SERVICE_TOKEN = os.getenv("SERVICE_TOKEN", "dev-service-token")
 
@@ -158,7 +172,9 @@ def list_projects() -> list[ProjectSummary]:
     return project_store.list_projects()
 
 
-@app.post("/projects", response_model=ProjectSummary, status_code=status.HTTP_201_CREATED)
+@app.post(
+    "/projects", response_model=ProjectSummary, status_code=status.HTTP_201_CREATED
+)
 def create_project(body: CreateProjectRequest) -> ProjectSummary:
     return project_store.create_project(name=body.name, description=body.description)
 
@@ -201,7 +217,9 @@ def list_prior_datasets(project_id: str) -> list[PriorDataset]:
 def get_session_record(session_id: str) -> TrainingSessionRecord:
     rec = project_store.get_session(session_id)
     if rec is None:
-        raise HTTPException(status_code=404, detail=f"session record {session_id} not found")
+        raise HTTPException(
+            status_code=404, detail=f"session record {session_id} not found"
+        )
     return rec
 
 
@@ -214,17 +232,27 @@ class SessionRecordPatch(BaseModel):
 
 
 @app.patch("/sessions/{session_id}/record", response_model=TrainingSessionRecord)
-def patch_session_record(session_id: str, body: SessionRecordPatch) -> TrainingSessionRecord:
+def patch_session_record(
+    session_id: str, body: SessionRecordPatch
+) -> TrainingSessionRecord:
     """UI/gateway sync for mock/replay completion and live metric refresh."""
     fields = {k: v for k, v in body.model_dump().items() if v is not None}
     rec = project_store.update_session(session_id, **fields)
     if rec is None:
-        raise HTTPException(status_code=404, detail=f"session record {session_id} not found")
+        raise HTTPException(
+            status_code=404, detail=f"session record {session_id} not found"
+        )
     return rec
 
 
-@app.post("/sessions", response_model=CreateSessionResponse, status_code=status.HTTP_201_CREATED)
-async def create_session(body: CreateSessionRequest, request: Request) -> CreateSessionResponse:
+@app.post(
+    "/sessions",
+    response_model=CreateSessionResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_session(
+    body: CreateSessionRequest, request: Request
+) -> CreateSessionResponse:
     mode = _resolve_mode(body)
     cid = _correlation_id(request)
 
@@ -256,7 +284,9 @@ async def create_session(body: CreateSessionRequest, request: Request) -> Create
         )
 
     if mode == "replay":
-        session = await replay_store.create(correlation_id=cid, recording=body.recording)
+        session = await replay_store.create(
+            correlation_id=cid, recording=body.recording
+        )
         _session_modes[session.session_id] = "replay"
         project_id = _register_training_session(
             session_id=session.session_id,
@@ -300,7 +330,9 @@ async def create_session(body: CreateSessionRequest, request: Request) -> Create
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"live session setup failed: {exc}") from exc
+        raise HTTPException(
+            status_code=502, detail=f"live session setup failed: {exc}"
+        ) from exc
     _session_modes[session.session_id] = "live"
     project_id = _register_training_session(
         session_id=session.session_id,
@@ -308,7 +340,9 @@ async def create_session(body: CreateSessionRequest, request: Request) -> Create
         mode="live",
         mock=False,
         replay=False,
-        dataset_filename=session.dataset_filename or body.dataset_filename or reuse_name,
+        dataset_filename=session.dataset_filename
+        or body.dataset_filename
+        or reuse_name,
         dataset_id=session.dataset_id,
         status="created",
     )
@@ -329,7 +363,9 @@ async def pause_session(session_id: str) -> SessionCommandResponse:
         try:
             session = await store.pause(session_id)
         except KeyError:
-            raise HTTPException(status_code=404, detail=f"session {session_id} not found") from None
+            raise HTTPException(
+                status_code=404, detail=f"session {session_id} not found"
+            ) from None
         return SessionCommandResponse(
             session_id=session.session_id,
             status=session.status.value,
@@ -339,14 +375,20 @@ async def pause_session(session_id: str) -> SessionCommandResponse:
         )
     if mode == "replay":
         return SessionCommandResponse(
-            session_id=session_id, status="paused", message="replay pause is cooperative only", mode="replay"
+            session_id=session_id,
+            status="paused",
+            message="replay pause is cooperative only",
+            mode="replay",
         )
     session = live_store.get(session_id)
     if session is None:
         raise HTTPException(status_code=404, detail=f"session {session_id} not found")
     session.status = "paused"
     return SessionCommandResponse(
-        session_id=session_id, status="paused", message="pause acknowledged", mode="live"
+        session_id=session_id,
+        status="paused",
+        message="pause acknowledged",
+        mode="live",
     )
 
 
@@ -357,7 +399,9 @@ async def resume_session(session_id: str) -> SessionCommandResponse:
         try:
             session = await store.resume(session_id)
         except KeyError:
-            raise HTTPException(status_code=404, detail=f"session {session_id} not found") from None
+            raise HTTPException(
+                status_code=404, detail=f"session {session_id} not found"
+            ) from None
         return SessionCommandResponse(
             session_id=session.session_id,
             status=session.status.value,
@@ -367,7 +411,10 @@ async def resume_session(session_id: str) -> SessionCommandResponse:
         )
     if mode == "replay":
         return SessionCommandResponse(
-            session_id=session_id, status="running", message="replay continues", mode="replay"
+            session_id=session_id,
+            status="running",
+            message="replay continues",
+            mode="replay",
         )
     session = live_store.get(session_id)
     if session is None:
@@ -386,7 +433,9 @@ async def reset_session(session_id: str) -> SessionCommandResponse:
         try:
             session = await store.reset(session_id)
         except KeyError:
-            raise HTTPException(status_code=404, detail=f"session {session_id} not found") from None
+            raise HTTPException(
+                status_code=404, detail=f"session {session_id} not found"
+            ) from None
         return SessionCommandResponse(
             session_id=session.session_id,
             status=session.status.value,
@@ -457,12 +506,16 @@ async def session_events(
             mode = "live"
             _session_modes[session_id] = "live"
         else:
-            raise HTTPException(status_code=404, detail=f"session {session_id} not found")
+            raise HTTPException(
+                status_code=404, detail=f"session {session_id} not found"
+            )
 
     if mode == "mock":
         session = store.get(session_id)
         if session is None:
-            raise HTTPException(status_code=404, detail=f"session {session_id} not found")
+            raise HTTPException(
+                status_code=404, detail=f"session {session_id} not found"
+            )
         _ = scenario
 
         async def mock_stream():
@@ -487,7 +540,9 @@ async def session_events(
     if mode == "replay":
         session = replay_store.get(session_id)
         if session is None:
-            raise HTTPException(status_code=404, detail=f"session {session_id} not found")
+            raise HTTPException(
+                status_code=404, detail=f"session {session_id} not found"
+            )
 
         async def replay_stream():
             async for event in replay_store.subscribe(session):
@@ -568,7 +623,9 @@ async def upload_dataset(
     mode = _session_modes.get(session_id, "live")
     if mode == "mock":
         if store.get(session_id) is None:
-            raise HTTPException(status_code=404, detail=f"session {session_id} not found")
+            raise HTTPException(
+                status_code=404, detail=f"session {session_id} not found"
+            )
         if MOCK_DATASET_SERVICE:
             filename = file.filename if file else "churn_sample.csv"
             return JSONResponse(
@@ -622,7 +679,13 @@ async def upload_dataset(
         resp = await client.post(
             f"{DATASET_SERVICE_URL}/datasets",
             headers={"X-Service-Token": SERVICE_TOKEN, "X-Correlation-Id": session_id},
-            files={"file": (file.filename or "upload.csv", content, file.content_type or "text/csv")},
+            files={
+                "file": (
+                    file.filename or "upload.csv",
+                    content,
+                    file.content_type or "text/csv",
+                )
+            },
             data={"target_column": target_column, "task_type": task_type},
         )
     if resp.status_code >= 400:
@@ -676,12 +739,28 @@ DEFAULT_OPENROUTER_MODEL = os.getenv(
 
 # Classroom fallback when OpenRouter /models is unreachable.
 _FALLBACK_OPENROUTER_MODELS = [
-    {"id": "nvidia/nemotron-3.5-lightning:free", "name": "Nemotron 3.5 Lightning (free)", "free": True},
-    {"id": "xingchen-agi/xing4.0-29b-a4b:free", "name": "Xing4.0 29B (free)", "free": True},
-    {"id": "meta-llama/llama-3.3-70b-instruct:free", "name": "Llama 3.3 70B (free)", "free": True},
+    {
+        "id": "nvidia/nemotron-3.5-lightning:free",
+        "name": "Nemotron 3.5 Lightning (free)",
+        "free": True,
+    },
+    {
+        "id": "xingchen-agi/xing4.0-29b-a4b:free",
+        "name": "Xing4.0 29B (free)",
+        "free": True,
+    },
+    {
+        "id": "meta-llama/llama-3.3-70b-instruct:free",
+        "name": "Llama 3.3 70B (free)",
+        "free": True,
+    },
     {"id": "google/gemma-3-27b-it:free", "name": "Gemma 3 27B (free)", "free": True},
     {"id": "qwen/qwen3-14b:free", "name": "Qwen3 14B (free)", "free": True},
-    {"id": "mistralai/mistral-small-3.1-24b-instruct:free", "name": "Mistral Small 3.1 (free)", "free": True},
+    {
+        "id": "mistralai/mistral-small-3.1-24b-instruct:free",
+        "name": "Mistral Small 3.1 (free)",
+        "free": True,
+    },
 ]
 
 
@@ -719,7 +798,13 @@ def _fetch_openrouter_models() -> list[dict]:
     try:
         with urllib.request.urlopen(req, timeout=12) as resp:
             data = json.loads(resp.read().decode("utf-8"))
-    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError, OSError):
+    except (
+        urllib.error.URLError,
+        urllib.error.HTTPError,
+        TimeoutError,
+        json.JSONDecodeError,
+        OSError,
+    ):
         return list(_FALLBACK_OPENROUTER_MODELS)
 
     rows: list[dict] = []
@@ -805,7 +890,12 @@ def _resolve_loop_dataset(explicit: str | None) -> str:
 
 def _packages_root() -> Path:
     """Parent of lab/ and solution/ packages (repo root locally, /packages in Docker)."""
-    for candidate in (SOLUTION_LOOP_ROOT.parent.parent, LAB_LOOP_ROOT.parent.parent, Path("/packages"), ROOT):
+    for candidate in (
+        SOLUTION_LOOP_ROOT.parent.parent,
+        LAB_LOOP_ROOT.parent.parent,
+        Path("/packages"),
+        ROOT,
+    ):
         if (candidate / "solution" / "langgraph" / "graph.py").exists() or (
             candidate / "lab" / "langgraph" / "graph.py"
         ).exists():
@@ -820,22 +910,28 @@ def _import_loop_graph(module: str, root: Path, label: str):
     if str(pkg_root) not in sys.path:
         sys.path.insert(0, str(pkg_root))
     for name in list(sys.modules):
-        if name in {"lab", "solution", "loop_runtime"} or name.startswith("lab.") or name.startswith(
-            "solution."
+        if (
+            name in {"lab", "solution", "loop_runtime"}
+            or name.startswith("lab.")
+            or name.startswith("solution.")
         ):
             del sys.modules[name]
     try:
         return importlib.import_module(module)
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=503, detail=f"cannot import {module}: {exc}") from exc
+        raise HTTPException(
+            status_code=503, detail=f"cannot import {module}: {exc}"
+        ) from exc
 
 
 def _import_solution_loop():
-    return _import_loop_graph("solution.langgraph.graph", SOLUTION_LOOP_ROOT, "solution loop")
+    return _import_loop_graph(
+        "solution.langgraph.graph", SOLUTION_LOOP_ROOT, "solution loop"
+    )
 
 
 def _import_lab_loop():
-    return _import_loop_graph("lab.langgraph.graph", LAB_LOOP_ROOT, "lab loop")
+    return _import_loop_graph("lab.langgraph.nyc_taxi_graph", LAB_LOOP_ROOT, "lab loop")
 
 
 def _loop_dataset_label(dataset_abs: str, requested: str | None) -> str:
@@ -868,7 +964,9 @@ def _record_loop_run(
             "holdout_f1": holdout.get("f1") if isinstance(holdout, dict) else None,
             "stop_reason": (result or {}).get("stop_reason"),
             "model": (model or "").strip() or _default_openrouter_model(),
-            "verdict_action": verdict.get("action") if isinstance(verdict, dict) else None,
+            "verdict_action": (
+                verdict.get("action") if isinstance(verdict, dict) else None
+            ),
             "error": error,
             "result": result if isinstance(result, dict) else None,
         }
@@ -933,8 +1031,12 @@ def solution_loop_models() -> dict:
                 "id": env_default,
                 "name": env_default,
                 "free": env_default.endswith(":free"),
-                "provider": "cursor" if env_default.startswith("cursor/") else "openrouter",
-                "available": cursor_ok if env_default.startswith("cursor/") else openrouter_ok,
+                "provider": (
+                    "cursor" if env_default.startswith("cursor/") else "openrouter"
+                ),
+                "available": (
+                    cursor_ok if env_default.startswith("cursor/") else openrouter_ok
+                ),
             },
         )
     return {
@@ -1037,7 +1139,9 @@ async def solution_loop_run(body: LoopRequest) -> JSONResponse:
             error=str(exc),
             model=model,
         )
-        raise HTTPException(status_code=500, detail=f"solution-loop failed: {exc}") from exc
+        raise HTTPException(
+            status_code=500, detail=f"solution-loop failed: {exc}"
+        ) from exc
     _record_loop_run(
         dataset_label=label,
         target_column=body.target_column,
@@ -1165,7 +1269,8 @@ async def lab_loop_stream(
     if not status.get("ready"):
         raise HTTPException(
             status_code=400,
-            detail=status.get("error") or "lab graph not ready — wire build_graph() first",
+            detail=status.get("error")
+            or "lab graph not ready — wire build_graph() first",
         )
 
     def event_stream():

@@ -123,18 +123,19 @@ The final test dataset is reserved for evaluation after model selection.
 
 To demonstrate all three training cycles, the validation F1 target was set to 0.99 with a maximum of three cycles.
 
+
 | Model | Validation Accuracy | Validation F1 |
 | --- | --- | --- |
 | Logistic Regression | 0.8965 | 0.8864 |
 | Decision Tree | 0.9021 | 0.8922 |
-| Random Forest | 0.9016 | 0.8924 |
+| Random Forest | 0.9016 | 0.8922 |
 
-**Selected model:** Random Forest
+**Selected model:** Decision Tree
 
 **Final holdout results:**
 
-- Test accuracy: 0.9026 (90.26%)
-- Test F1-score: 0.8963
+- Test accuracy: 0.9010 (90.10%)
+- Test F1-score: 0.8931
 
 The workflow stopped after three cycles because it reached the maximum number of allowed attempts.
 
@@ -174,6 +175,25 @@ The command prints the training cycles, validation scores, routing decisions, se
 
 ![LangGraph training cycles](../../screenshots/nyc_taxi_langgraph_cycles.png)
 
+### Live LangGraph Interface
+
+The NYC Taxi ML workflow can also be executed through the repository's live web interface.
+
+1. Start the Docker services and frontend using the repository's development setup.
+2. Open `http://localhost:5174/lab-loop`.
+3. Set the target F1 score to `0.99` and the experiment budget to `3`.
+4. Click **Run loop**.
+
+The interface displays the five-node LangGraph workflow, updates node statuses during execution, and plots the validation F1 scores for Logistic Regression, Decision Tree, and Random Forest.
+
+After execution, the page displays the selected model and final holdout test accuracy and F1 score.
+
+### Live Interface Screenshots
+
+![Completed live LangGraph workflow](../../screenshots/nyc_taxi_live_graph.png)
+
+![Final model evaluation](../../screenshots/nyc_taxi_final_results.png)
+
 ### Final Evaluation
 
 ![LangGraph evaluation results](../../screenshots/nyc_taxi_langgraph_results.png)
@@ -184,4 +204,4 @@ This project demonstrates a reproducible workflow connecting data engineering an
 
 Airflow orchestrates data cleaning, merging, PostgreSQL storage, and data retrieval. LangGraph uses the resulting dataset to compare classification models, repeat experiments based on validation performance, and evaluate the selected model on held-out data.
 
-The final Random Forest classifier achieved 90.26% test accuracy and an F1-score of 0.8963.
+The final Decision Tree classifier achieved 90.10% test accuracy and an F1-score of 0.8931.

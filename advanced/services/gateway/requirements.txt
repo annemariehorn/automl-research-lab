@@ -6,6 +6,7 @@ python-multipart>=0.0.9
 redis>=5.0
 # Lab/solution research loops (LangGraph teaching path)
 pandas>=2.2
+pyarrow>=15.0
 scikit-learn>=1.4
 langgraph>=0.2
 cursor-sdk>=0.1.0

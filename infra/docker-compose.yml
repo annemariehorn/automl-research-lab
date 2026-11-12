@@ -78,6 +78,7 @@ services:
       # rw so uploaded CSVs can be reused via the prior-datasets dropdown
       - ../datasets:/bundled
       - ../lab:/packages/lab
+      - ../artifacts/nyc_taxi:/packages/artifacts/nyc_taxi
       - ../solution:/packages/solution
       # Shared LLM/train helpers imported by both graphs (not a student paste target)
       - ../loop_runtime.py:/app/loop_runtime.py
@@ -315,6 +316,7 @@ services:
       _AIRFLOW_WWW_USER_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD:-admin}
       PYTHONPATH: /repo
       SOLUTION_LOOP_GATEWAY_URL: http://gateway:8000
+      DATA_WAREHOUSE_URL: postgresql+psycopg2://airflow:airflow@airflow-db/automl_data
     volumes: &airflow-common-volumes
       - ../lab/airflow/dags:/opt/airflow/dags/lab
       - ../solution/airflow/dags:/opt/airflow/dags/solution
